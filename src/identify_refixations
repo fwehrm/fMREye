@@ -1,0 +1,126 @@
+import numpy as np
+import pandas as pd
+from pathlib import Path
+
+# eye tracking data is available for every participant but S08, S24, S29 and S48
+subjects = np.arange(1, 51)
+subjects = [f"S{i:02}" for i in subjects if i not in [8, 24, 29, 48]]
+
+runs = [1, 2]
+
+# data directories
+src_path = Path("data/eye_files/fixations")
+res_path = Path("data/eye_files/refixations")
+
+# eye-tracking setup
+pixel_pitch_mm = 0.36375
+viewD_mm = 1020
+
+def calc_degree_of_visual_angle(size_mm, viewD_mm):
+    """Calculates the visual angle subtended by one pixel at a given viewing distance."""    
+    deg_per_pix = np.degrees(2 * np.arctan((size_mm / 2) / viewD_mm))
+    return deg_per_pix
+
+def calc_pairwise_diff_matrix(a):
+    """Calculates pairwise differences between all fixation coordinates along one axis."""
+    a_trans = np.reshape(a, shape = (len(a), 1))
+    diff_mat = a_trans - a
+    return diff_mat
+
+def calc_dist_matrix(x, y):
+    """Calculates pairwise Euclidean distances between fixation coordinates."""
+    x_diff = calc_pairwise_diff_matrix(x)
+    y_diff = calc_pairwise_diff_matrix(y)
+    dist_mat = np.hypot(x_diff, y_diff)
+    return np.triu(dist_mat)
+
+# refixation thresholds corresponding to 1° of visual angle
+thresh_in = 1 / calc_degree_of_visual_angle(pixel_pitch_mm, viewD_mm)
+thresh_out = 1 / calc_degree_of_visual_angle(pixel_pitch_mm, viewD_mm)
+
+def calc_refix_in_dist_mat(dist_mat, thresh_in, thresh_out):
+    """
+    This function identifies refixations in an upper-triangle distance matrix of fixations.
+
+    A fixation i is classified as a refixation to a precursor p if:
+        (1) i is within the area of p (distance <= 'thresh_in')
+        (2) the area of p was left before i (distance > 'thresh_out') and is re-entered with it
+            (i.e., the last fixation before the refixation is outside of p) 
+        (3) a refixation cannot serve as a precursor
+        (4) if multiple p satisfy the above, the earliest p is chosen
+    """
+
+    N = dist_mat.shape[0]
+
+    is_refix = np.zeros(N, dtype = bool)
+    prec_of = np.full(N, -1, dtype = int)
+    
+    for i in range(1, N):
+        # check if the refixation candidate has potential precursors
+        prec_cand = np.where(dist_mat[:i, i] <= thresh_in)[0]
+        if prec_cand.size == 0:
+            continue
+
+        # check in increasing order => earliest wins
+        for p in prec_cand:
+            # check if the precursor is a refixation
+            if is_refix[p]:
+                continue
+
+            # check if the fixation before i is outside of p
+            if dist_mat[p, i-1] <= thresh_out:
+                continue
+            
+            is_refix[i] = True
+            prec_of[i] = p
+            break
+
+    return is_refix, prec_of
+
+def calc_refixations(src_path, res_path, subject, run):
+    """Identifies refixations in a fixation file and saves the resulting data."""
+    # get files
+    fix_file_path = list((src_path / subject).glob(f"*R{run}*"))
+    if not fix_file_path:
+        raise FileNotFoundError(f"No fixation file found for {subject}, run{run}!")
+    if len(fix_file_path) > 1:
+        raise ValueError(f"Multiple fixation files found for {subject}, run{run}!")
+    fix_file = pd.read_csv(fix_file_path[0])
+
+    # helper flags
+    fix_file["is_refix"] = False
+    fix_file["position_in_trial"] = pd.NA
+    fix_file["precursor_in_trial"] = pd.NA
+
+    trials = fix_file["trial"].unique()
+
+    # calculate refixations per trial
+    for trial in trials:
+        # get trial data and extract x and y coordinates
+        trial_data = fix_file.loc[fix_file["trial"] == trial]
+        fix_idx = trial_data.index # indices in the original fixation file
+        fixx = np.array(trial_data["mean_x"])
+        fixy = np.array(trial_data["mean_y"])
+
+        # calculate distance matrix
+        dist_mat = calc_dist_matrix(fixx, fixy)
+
+        # calculate refixations in distance matrix
+        is_refix, prec_of = calc_refix_in_dist_mat(dist_mat, thresh_in, thresh_out)
+
+        fix_file.loc[fix_idx, "is_refix"] = is_refix
+        fix_file.loc[fix_idx, "position_in_trial"] = np.arange(1, len(fix_idx)+1)
+        fix_file.loc[fix_idx, "precursor_in_trial"] = np.where(prec_of >= 0, prec_of + 1, pd.NA)
+
+    refix_file = fix_file.loc[fix_file["is_refix"] == True].reset_index(drop = True)
+
+    # store new file
+    (res_path / subject).mkdir(parents = True, exist_ok = True)
+    refix_path = res_path /subject / f"{subject}_REFIX_R{run}.csv"
+    refix_file.to_csv(refix_path, index = False)
+
+
+if __name__ == "__main__":
+    for subject in subjects:
+        for run in runs:
+            calc_refixations(src_path, res_path, subject, run)
