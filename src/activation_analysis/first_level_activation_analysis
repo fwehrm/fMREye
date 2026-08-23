@@ -8,7 +8,13 @@ from nilearn.glm.first_level import FirstLevelModel
 from pathlib import Path
 
 # define subjects & runs
-subjects = [f"S{i:02}" for i in range(1, 51)]
+excluded_subs = [
+    8, 24, 29, 48,  # technical error during eye-tracking
+    4, 6, 13, 14, 16, 42, # calibration error exceeded threshold
+    10, 32, 35,  # frame-wise displacement exceeded threshold
+    20  # technical problem during pre-processing
+]
+subjects = [f"S{i:02}" for i in range(1, 51) if i not in excluded_subs]
 runs = [1, 2]
 
 # data directories
