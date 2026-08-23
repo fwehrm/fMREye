@@ -1,0 +1,86 @@
+import warnings
+import pandas as pd
+import numpy as np
+
+from nilearn import plotting, datasets
+from nilearn.image import math_img
+from nilearn.glm.second_level import SecondLevelModel, non_parametric_inference
+from nilearn.reporting import get_clusters_table
+from pathlib import Path
+
+# define subjects
+excluded_subs = [
+    8, 24, 29, 48,  # technical error during eye-tracking
+    4, 6, 13, 14, 16, 42, # calibration error exceeded threshold
+    10, 32, 35,  # frame-wise displacement exceeded threshold
+    20  # technical problem during pre-processing
+]
+subjects = [f"S{i:02}" for i in range(1, 51) if i not in excluded_subs]
+
+# data directories
+src_path = Path("PPI_analysis/first_level_analysis/sPPI_results/PPI")
+
+# get first-level contrast maps
+first_level_cmaps = [
+    src_path / f"{subject}_PPI.nii"
+    for subject in subjects
+]
+
+# create design matrix
+design_matrix = pd.DataFrame(
+    {"intercept": [1] * len(first_level_cmaps)},
+    index = subjects
+)
+
+# instantiate and run second-level model
+second_level_model = SecondLevelModel()
+second_level_model = second_level_model.fit(
+    second_level_input = first_level_cmaps,
+    design_matrix = design_matrix
+)
+zmap = second_level_model.compute_contrast(
+    second_level_contrast = "intercept",
+    output_type = "z_score"
+)
+
+# cluster-level permutation inference
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore", category = UserWarning)
+    threshold_dict = non_parametric_inference(
+        second_level_input = first_level_cmaps,
+        design_matrix = design_matrix,
+        second_level_contrast = "intercept",
+        n_perm = 10000,
+        two_sided_test = False,
+        threshold = 0.001, #cluster-forming threshold
+    )
+
+# apply thresholding
+thresholded_map = math_img(
+    formula = "img1 * (img2 > -np.log10(0.05))",
+    img1 = zmap,
+    img2 = threshold_dict["logp_max_size"]
+)
+
+# visualize results with a classic stat image
+mni_template = datasets.load_mni152_template(resolution = 1)
+fig = plotting.plot_stat_map(
+    stat_map_img = thresholded_map,
+    bg_img = mni_template,
+    black_bg = False,
+    draw_cross = False,
+    display_mode = "ortho",
+    cut_coords = (42, -76, -9.0),
+    colorbar = True,
+    cmap = "hot",
+    dim = -0.15,
+    resampling_interpolation = "continuous",
+    annotate = False
+)
+
+# get cluster table
+cluster_table = get_clusters_table(thresholded_map, stat_threshold = 0)
+cluster_table["Cluster Size (mm3)"] = pd.to_numeric(cluster_table["Cluster Size (mm3)"], errors = "coerce")
+cluster_table["Cluster Size (mm3)"] = (cluster_table["Cluster Size (mm3)"] / 12).fillna("")
+cluster_table = cluster_table.rename(columns = {"Cluster Size (mm3)": "Cluster Size (voxels)"})
+cluster_table["Peak Stat"] = np.round(cluster_table["Peak Stat"], 2)
