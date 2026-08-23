@@ -9,7 +9,13 @@ from nilearn.reporting import get_clusters_table
 from pathlib import Path
 
 # define subjects
-subjects = [f"S{i:02}" for i in range(1, 51)]
+excluded_subs = [
+    8, 24, 29, 48,  # technical error during eye-tracking
+    4, 6, 13, 14, 16, 42, # calibration error exceeded threshold
+    10, 32, 35,  # frame-wise displacement exceeded threshold
+    20  # technical problem during pre-processing
+]
+subjects = [f"S{i:02}" for i in range(1, 51) if i not in excluded_subs]
 
 # data directories
 src_path = Path("activation_analysis/first_level_analysis/results")
