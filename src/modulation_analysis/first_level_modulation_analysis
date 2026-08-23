@@ -22,7 +22,7 @@ runs = [1, 2]
 src_path_nii = Path("data_nii")
 src_path_events = Path("data/event_files")
 src_path_eye = Path("data/eye_files/refixations")
-res_path = Path("activation_analysis/first_level_analysis/results")
+res_path = Path("modulation_analysis/first_level_analysis/results")
 
 def calculate_refixations_per_trial(refix_file):
     """This function calculates and returns the mean-centered number of refixations per trial."""
