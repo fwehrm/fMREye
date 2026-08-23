@@ -1,0 +1,146 @@
+import matplotlib.pyplot as plt
+import nibabel as nib
+import pandas as pd
+import warnings
+
+from nilearn import plotting
+from nilearn.glm.first_level import FirstLevelModel
+from pathlib import Path
+
+# define subjects & runs
+subjects = [f"S{i:02}" for i in range(1, 51)]
+runs = [1, 2]
+
+# data directories
+src_path_nii = Path("data_nii")
+src_path_events = Path("data/event_files")
+res_path = Path("activation_analysis/first_level_analysis/results")
+
+
+def get_first_level_files(subject):
+    """This function loads all files required for the first-level analysis."""
+    # initiate storage
+    func_files = {run: None for run in runs}
+    mo_files = {run: None for run in runs}
+    event_files = {run: None for run in runs}
+
+    n_drop = 12 if subject in ['S40', 'S41', 'S42'] else 6
+
+    for run in runs:
+        # pull and process functional file (drop either the first 6 or 12 volumes)
+        func_file_path = list((src_path_nii / f"{subject}_hipp_epi_matthias_v0_study{run}").glob("swratopup.nii"))
+        if not func_file_path:
+            raise FileNotFoundError(f"No functional file found for {subject}, run{run}!")
+        if len(func_file_path) > 1:
+            raise ValueError(f"Multiple functional files found for {subject}, run{run}!")
+        img = nib.load(func_file_path[0])
+        img_data = img.get_fdata()
+        func_file = nib.Nifti1Image(img_data[:, :, :, n_drop:], affine = img.affine, header = img.header)
+
+        # pull and process motion file (add first derivatives and squared first derivatives; drop either the first 6 or 12 rows)
+        mo_file_path = list((src_path_nii / f"{subject}_hipp_epi_matthias_v0_study{run}").glob("*.txt"))
+        if not mo_file_path:
+            raise FileNotFoundError(f"No motion file found for {subject}, run{run}!")
+        if len(mo_file_path) > 1:
+            raise ValueError(f"Multiple motion files found for {subject}, run{run}!")
+        mo_file = pd.read_csv(mo_file_path[0], header = None, sep = r"\s+")
+        mo_file = mo_file.iloc[n_drop:].reset_index(drop = True)
+        mo_file.columns = ["x", "y", "z", "pitch", "roll", "yaw"]
+
+        d1 = mo_file.diff().fillna(0) # fill first row with zeros
+        d1.columns = [f"d1_{c}" for c in mo_file.columns]
+        d1_sq = d1.pow(2)
+        d1_sq.columns = [f"sq_{c}" for c in d1.columns]
+        mo_file = pd.concat([mo_file, d1, d1_sq], axis = 1)
+
+        # pull and process event file
+        event_file_path = list((src_path_events / subject).glob(f"*R{run}*"))
+        if not event_file_path:
+            raise FileNotFoundError(f"No event file found for {subject}, run{run}!")
+        if len(event_file_path) > 1:
+            raise ValueError(f"Multiple event files found for {subject}, run{run}!")
+        event_file = pd.read_csv(event_file_path[0])
+
+        # store files in dict
+        func_files[run] = func_file
+        mo_files[run] = mo_file
+        event_files[run] = event_file
+
+    # pull anatomical file
+    anat_file_path = list((src_path_nii / f"{subject}_t1_mprage_sag_p2_0.8iso").glob(f"r2wbs{subject}*.nii"))
+    if not anat_file_path:
+        raise FileNotFoundError(f"No anatomical file found for {subject}!")
+    if len(anat_file_path) > 1:
+        raise ValueError(f"Multiple anatomical files found for {subject}!")
+    anat_file = nib.load(anat_file_path[0])
+    return func_files, anat_file, mo_files, event_files
+
+
+def plot_z_maps(subject, anat_file, z_maps):
+    """This function plots all contrast maps for a specified participant."""
+    n_maps = len(z_maps)
+    fig, ax = plt.subplots(nrows = n_maps, figsize = (14, 4 * (n_maps)), facecolor = "black")
+
+    # in case of one contrast
+    if n_maps == 1:
+        ax = [ax]
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category = UserWarning)
+        for ax, (contrast_name, z_map) in zip(ax, z_maps.items()):
+            plotting.plot_stat_map(
+                z_map,
+                title = f"{subject}: {contrast_name}",
+                threshold = 3.0,
+                axes = ax,
+                bg_img = anat_file,
+                black_bg = True,
+                colorbar = True,
+                cmap = "cold_hot",
+                display_mode = "z",
+                cut_coords = list(range(-20, 70, 10))
+            )
+    plt.show()
+
+
+def run_first_level_model(subject):
+    """This function runs the first-level model for one subject."""
+    # pull required files
+    func_files, anat_file, mo_files, event_files = get_first_level_files(subject)
+
+    # instantiate the first level model
+    first_level_model = FirstLevelModel(
+        t_r = 2.029,
+        slice_time_ref = 0.5,
+        hrf_model = "spm",
+        drift_model = "cosine",
+        high_pass = 1/128,
+        smoothing_fwhm = None
+    )
+
+    # fit the first level model
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category = UserWarning)
+        first_level_model = first_level_model.fit(
+            run_imgs = [func_files[run] for run in runs],
+            events = [event_files[run] for run in runs],
+            confounds = [mo_files[run] for run in runs]
+    )
+
+    # compute contrasts maps
+    z_maps = {"durable > forgotten": None}
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category = (RuntimeWarning, UserWarning))
+        z_maps["durable > forgotten"] = first_level_model.compute_contrast("durable - forgotten", output_type = "z_score")
+
+    # export z_maps
+    filename = res_path / f"{subject}_durable-forgotten.nii"
+    z_maps["durable > forgotten"].to_filename(filename)
+
+    # visualize first level contrast map
+    plot_z_maps(subject, anat_file, z_maps)
+
+# run first-level model for all participants
+if __name__ == "__main__":
+    for subject in subjects:
+        run_first_level_model(subject)
