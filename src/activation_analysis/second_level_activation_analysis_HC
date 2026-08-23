@@ -1,0 +1,37 @@
+import warnings
+import nibabel as nib
+
+from nilearn.image import resample_to_img
+from nilearn.maskers import NiftiMasker
+from pathlib import Path
+from scipy.stats import ttest_1samp
+
+# define subjects
+subjects = [f"S{i:02}" for i in range(1, 51)]
+
+# data directories
+src_path = Path("activation_analysis/first_level_analysis/results")
+
+# get the mean contrast value in the hippocampus
+hipp_means = []
+
+for subject in subjects:
+    subject_path = list((src_path).glob(fr"{subject}*"))[0]
+    subject_file = nib.load(subject_path)
+    HC_mask = resample_to_img(
+        source_img = nib.load("masks/HC_mask_LR.nii"),
+        target_img = subject_file,
+        interpolation = "nearest",
+        copy_header = True,
+        force_resample = True
+    )
+
+    HC_masker = NiftiMasker(mask_img = HC_mask)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category = UserWarning)
+        mean_val = HC_masker.fit_transform(subject_file).mean()
+        hipp_means.append(mean_val)
+
+# run one-sample t-test
+ttest_1samp(hipp_means, 0, alternative = "greater")
