@@ -22,7 +22,7 @@ src_path = Path("modulation_analysis/first_level_analysis/results")
 
 # get first-level contrast maps
 first_level_cmaps = [
-    src_path / f"{subject}_durable-forgotten.nii"
+    src_path / f"{subject}_study_pmod.nii"
     for subject in subjects
 ]
 
