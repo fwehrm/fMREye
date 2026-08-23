@@ -1,0 +1,206 @@
+import matplotlib.pyplot as plt
+import nibabel as nib
+import numpy as np
+import pandas as pd
+import warnings
+
+from nilearn import plotting
+from nilearn.glm.first_level import FirstLevelModel, make_first_level_design_matrix
+from pathlib import Path
+
+# define subjects & runs
+excluded_subs = [
+    8, 24, 29, 48,  # technical error during eye-tracking
+    4, 6, 13, 14, 16, 42, # calibration error exceeded threshold
+    10, 32, 35,  # frame-wise displacement exceeded threshold
+    20  # technical problem during pre-processing
+]
+subjects = [f"S{i:02}" for i in range(1, 51) if i not in excluded_subs]
+runs = [1, 2]
+
+# data directories
+src_path_nii = Path("data_nii")
+src_path_events = Path("data/event_files")
+src_path_eye = Path("data/eye_files/refixations")
+res_path = Path("activation_analysis/first_level_analysis/results")
+
+def calculate_refixations_per_trial(refix_file):
+    """This function calculates and returns the mean-centered number of refixations per trial."""
+    n_refix_per_trial = refix_file.groupby("trial").size()
+
+    # create final refixation df
+    refix_df = pd.DataFrame(data = {"trial": np.arange(1, 97), "n_refix": 0})
+    # fill refixation df
+    for trial, n_refix in n_refix_per_trial.items():
+        refix_df.loc[refix_df["trial"] == trial, "n_refix"] = n_refix
+    
+    # mean-center refixations
+    refix_df["n_refix"] = refix_df["n_refix"] - refix_df["n_refix"].mean()
+    return refix_df
+
+
+def get_first_level_files(subject):
+    """This function loads all files required for the first-level analysis."""
+    # initiate storage
+    func_files = {run: None for run in runs}
+    mo_files = {run: None for run in runs}
+    event_files = {run: None for run in runs}
+
+    n_drop = 12 if subject in ['S40', 'S41', 'S42'] else 6
+
+    for run in runs:
+        # pull and process functional file (drop either the first 6 or 12 volumes)
+        func_file_path = list((src_path_nii / f"{subject}_hipp_epi_matthias_v0_study{run}").glob("swratopup.nii"))
+        if not func_file_path:
+            raise FileNotFoundError(f"No functional file found for {subject}, run{run}!")
+        if len(func_file_path) > 1:
+            raise ValueError(f"Multiple functional files found for {subject}, run{run}!")
+        img = nib.load(func_file_path[0])
+        img_data = img.get_fdata()
+        func_file = nib.Nifti1Image(img_data[:, :, :, n_drop:], affine = img.affine, header = img.header)
+
+        # pull and process motion file (add first derivatives and squared first derivatives; drop either the first 6 or 12 rows)
+        mo_file_path = list((src_path_nii / f"{subject}_hipp_epi_matthias_v0_study{run}").glob("*.txt"))
+        if not mo_file_path:
+            raise FileNotFoundError(f"No motion file found for {subject}, run{run}!")
+        if len(mo_file_path) > 1:
+            raise ValueError(f"Multiple motion files found for {subject}, run{run}!")
+        mo_file = pd.read_csv(mo_file_path[0], header = None, sep = r"\s+")
+        mo_file = mo_file.iloc[n_drop:].reset_index(drop = True)
+        mo_file.columns = ["x", "y", "z", "pitch", "roll", "yaw"]
+
+        d1 = mo_file.diff().fillna(0) # fill first row with zeros
+        d1.columns = [f"d1_{c}" for c in mo_file.columns]
+        d1_sq = d1.pow(2)
+        d1_sq.columns = [f"sq_{c}" for c in d1.columns]
+        mo_file = pd.concat([mo_file, d1, d1_sq], axis = 1)
+
+        # pull refixation file and calculate refixations per trial
+        refix_file_path = list((src_path_eye / subject).glob(fr"*R{run}*"))
+        if not refix_file_path:
+            raise FileNotFoundError(f"No refixation file found for {subject}, run{run}!")
+        if len(refix_file_path) > 1:
+            raise ValueError(f"Multiple refixation files found for {subject}, run{run}!")
+        refix_file = calculate_refixations_per_trial(pd.read_csv(refix_file_path[0]))
+
+        # pull and process event files (add modulation column)
+        event_file_path = list((src_path_events / subject).glob(f"*R{run}*"))
+        if not event_file_path:
+            raise FileNotFoundError(f"No event file found for {subject}, run{run}!")
+        if len(event_file_path) > 1:
+            raise ValueError(f"Multiple event files found for {subject}, run{run}!")
+        event_file = pd.read_csv(event_file_path[0])
+        event_file = event_file.merge(refix_file, on = "trial", how = "left")
+        event_file = event_file.rename(columns = {"n_refix": "modulation"})
+
+        # store files in dict
+        func_files[run] = func_file
+        mo_files[run] = mo_file
+        event_files[run] = event_file
+
+    # pull anatomical file
+    anat_file_path = list((src_path_nii / f"{subject}_t1_mprage_sag_p2_0.8iso").glob(f"r2wbs{subject}*.nii"))
+    if not anat_file_path:
+        raise FileNotFoundError(f"No anatomical file found for {subject}!")
+    if len(anat_file_path) > 1:
+        raise ValueError(f"Multiple anatomical files found for {subject}!")
+    anat_file = nib.load(anat_file_path[0])
+    return func_files, anat_file, mo_files, event_files
+
+
+def plot_z_maps(subject, anat_file, z_maps):
+    """This function plots all contrast maps for a specified participant."""
+    n_maps = len(z_maps)
+    fig, ax = plt.subplots(nrows = n_maps, figsize = (14, 4 * (n_maps)), facecolor = "black")
+
+    # in case of one contrast
+    if n_maps == 1:
+        ax = [ax]
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category = UserWarning)
+        for ax, (contrast_name, z_map) in zip(ax, z_maps.items()):
+            plotting.plot_stat_map(
+                z_map,
+                title = f"{subject}: {contrast_name}",
+                threshold = 3.0,
+                axes = ax,
+                bg_img = anat_file,
+                black_bg = True,
+                colorbar = True,
+                cmap = "cold_hot",
+                display_mode = "z",
+                cut_coords = list(range(-20, 70, 10))
+            )
+    plt.show()
+
+
+def run_first_level_model(subject):
+    """This function runs the first-level model for one subject."""
+    # pull required files
+    func_files, anat_file, mo_files, event_files = get_first_level_files(subject)
+
+    # create first-level model
+    TR = 2.029
+
+    first_level_model = FirstLevelModel(
+        t_r = TR,
+        slice_time_ref = 0.5,
+        smoothing_fwhm = None
+    )
+
+    # create design matrices
+    design_matrices = {run: None for run in runs}
+    for run in runs:
+        # 1) base study regressor (no modulation)
+        events_base = event_files[run].copy()
+        events_base["trial_type"] = "study"
+        events_base["modulation"] = 1.0
+
+        # 2) study regressor modulated by refixations
+        events_pmod = event_files[run].copy()
+        events_pmod["trial_type"] = "study_pmod"
+
+        # stack both events together
+        events_design = pd.concat([events_base, events_pmod], ignore_index = True)
+        events_design = events_design.sort_values(by = "onset")
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category = UserWarning)
+            dm = make_first_level_design_matrix(
+                frame_times = np.arange(func_files[run].shape[-1]) * TR + TR / 2,
+                events = events_design,
+                hrf_model = "spm",
+                drift_model = "cosine",
+                high_pass = 1/128,
+                add_regs = mo_files[run],
+                add_reg_names = mo_files[run].columns
+            )
+        design_matrices[run] = dm
+        
+    # fit the first level model
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category = UserWarning)
+        first_level_model = first_level_model.fit(
+            run_imgs = [func_files[run] for run in runs],
+            design_matrices = [design_matrices[run] for run in runs]
+    )
+        
+    # compute contrasts maps
+    z_maps = {"study_pmod": None}
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category = (RuntimeWarning, UserWarning))
+        z_maps["study_pmod"] = first_level_model.compute_contrast("study_pmod", output_type = "z_score")
+
+    # store results
+    filename = res_path / f"{subject}_study_pmod.nii"
+    z_maps["study_pmod"].to_filename(filename)
+
+    # visualize first level contrast map
+    plot_z_maps(subject, anat_file, z_maps)
+
+
+# run first-level model for all participants
+if __name__ == "__main__":
+    for subject in subjects:
+        run_first_level_model(subject)
