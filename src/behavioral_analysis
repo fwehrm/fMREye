@@ -1,0 +1,196 @@
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import seaborn as sns
+from pathlib import Path
+from scipy.stats import pearsonr, shapiro, permutation_test, bootstrap, linregress
+
+# eye tracking data is available for every participant but S08, S24, S29 and S48
+subjects = [f"S{i:02}" for i in range(1, 51) if i not in [8, 24, 29, 48]]
+trials_per_run = 96
+
+# data directories
+refix_src_path = Path("data/eye_files/refixations")
+
+# load d_prime csv
+d_prime = pd.read_csv("data/d_prime/dprime_all.csv")
+d_prime = d_prime.rename(columns = {"subjID": "SubID"})
+d_prime = d_prime.drop(columns = {"d_t1", "d_t2", "dprime_imm"})
+
+def get_refixation_data(subject):
+    """This function calculates the average number of refixations per trial for one participant."""
+    # pull refixations from run 1
+    refix_run1_path = list((refix_src_path / subject).glob("*R1*"))
+    if not refix_run1_path:
+        raise FileNotFoundError(f"No refixation file found for {subject}, run1!")
+    if len(refix_run1_path) > 1:
+        raise ValueError(f"Multiple refixation files found for {subject}, run1!")
+    refix_run1 = pd.read_csv(refix_run1_path[0])
+
+    # pull refixation from run 2
+    refix_run2_path = list((refix_src_path / subject).glob("*R2*"))
+    if not refix_run2_path:
+        raise FileNotFoundError(f"No refixation file found for {subject}, run2!")
+    if len(refix_run2_path) > 1:
+        raise ValueError(f"Multiple refixation files found for {subject}, run2!")
+    refix_run2 = pd.read_csv(refix_run2_path[0])
+
+    outs = {"SubID": subject}
+    outs["trial_avg"] = (len(refix_run1) + len(refix_run2)) / (trials_per_run * 2)
+    return outs
+
+# get the average number of refixations per trial for all participants
+outs = []
+for subject in subjects:
+    outs.append(get_refixation_data(subject))
+df_refix = pd.DataFrame(outs)
+
+# merge the d_prime and the refixation DataFrame
+df = pd.merge(
+    left = df_refix,
+    right = d_prime,
+    on = "SubID"
+)
+
+# check descriptives for both variables
+print(df["trial_avg"].describe())
+print(shapiro(df["trial_avg"]))
+
+print(df["dprime_del"].describe())
+print(shapiro(df["dprime_del"]))
+
+
+# perform regression analysis
+reg = linregress(
+    x = df["trial_avg"],
+    y = df["dprime_del"],
+    alternative = "greater",
+)
+
+# visualize regression analysis
+fig, ax = plt.subplots(figsize = (6, 6))
+sns.regplot(
+    data = df,
+    x = "trial_avg",
+    y = "dprime_del",
+    x_ci = "ci",
+    ci = 90,
+    scatter_kws = dict(
+        s = 150,
+        facecolor = "none",
+        edgecolor = "#111D4E",
+        linewidths = 2.1),
+    line_kws = dict(
+        color = "#798EE2")
+)
+ax.text(
+    x = 1.68,
+    y = 0.85,
+    s = fr"$b$ = {np.round(reg.slope, 2)}, $p$ = {np.round(reg.pvalue, 3)}",
+    ha = "right", va = "top",
+    fontsize = 13,
+)
+ax.set_xlabel("Refixations per Trial", fontsize = 12, labelpad = 10)
+ax.set_ylabel("Delayed Recognition Memory Performance ($d$-prime)", fontsize = 12, labelpad = 10)
+
+
+# perform permutation analysis
+x = np.array(df["trial_avg"])
+y = np.array(df["dprime_del"])
+
+def calc_reg(x, y):
+    """This function calculates and returns the regression coefficient of a regression analysis."""
+    return linregress(x, y).slope
+
+res_perm = permutation_test(
+    data = (x, y),
+    statistic = calc_reg,
+    permutation_type = "pairings",
+    n_resamples = 10000,
+    alternative = "greater"
+)
+
+# visualize results of the permutation analysis
+fig, ax = plt.subplots(figsize= (8,4))
+sns.histplot(
+    res_perm.null_distribution,
+    ax = ax,
+    color = "#798EE2",
+    alpha = 0.25,
+    linewidth = 0.2
+)
+ax.axvline(
+    x = reg.slope, 
+    color = "#798EE2", 
+    linestyle = "--",
+    linewidth = 2,
+    label = fr"$B$ = {np.round(reg.slope, 2)}"
+)
+ax.axvline(
+    x = np.percentile(res_perm.null_distribution, 95),
+    color = "#111D4E", 
+    linestyle = "--",
+    linewidth = 2,
+    label = r"95th percentile"
+)
+ax.legend(
+    frameon = False,
+    fontsize = 13,
+    loc = "upper left"
+)
+ax.set_xlabel("Regression Coefficients", fontsize = 12, labelpad = 10)
+ax.set_ylabel("Frequency", fontsize = 12, labelpad = 10)
+
+
+# perform bootstrapping to create confidence intervals
+def r_pears(x, y):
+    """This function calculates and returns a pearson correlation between two variables."""
+    return pearsonr(x, y).statistic
+
+res_boot = bootstrap(
+    data = (x, y),
+    statistic = r_pears,
+    n_resamples = 10000,
+    paired = True,
+    confidence_level = 0.90,
+    alternative = "two-sided",
+    method = "BCa",
+)
+
+# visualize results
+fig, ax = plt.subplots(figsize= (8,4))
+sns.histplot(
+    res_boot.bootstrap_distribution,
+    ax = ax,
+    color = "#798EE2",
+    alpha = 0.25,
+    linewidth = 0.2
+)
+ax.axvline(
+    x = reg.rvalue, 
+    color = "#798EE2", 
+    linestyle = "--",
+    linewidth = 3,
+    label = fr"$r$ = {np.round(reg.rvalue, 2)}"
+)
+ax.axvline(
+    x = res_boot.confidence_interval[0], 
+    color = "#111D4E", 
+    linestyle = "--",
+    linewidth = 2,
+    label = "90% CI"   
+)
+ax.axvline(
+    x = res_boot.confidence_interval[1], 
+    color = "#111D4E", 
+    linestyle = "--",
+    linewidth = 2
+)
+ax.legend(
+    frameon = False,
+    fontsize = 13,
+    loc = "upper left"
+)
+
+ax.set_xlabel("Bootstrapped Effect Sizes", fontsize = 12, labelpad = 10)
+ax.set_ylabel("Frequency", fontsize = 12, labelpad = 10)
