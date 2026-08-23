@@ -223,7 +223,7 @@ def run_first_level_ppi(subject):
 
     # save contrast maps
     nib.save(z_maps["durable-forgotten"], f"PPI/first_level_analysis/sPPI_results/durable-forgotten/{subject}_durable-forgotten.nii")
-    nib.save(z_maps["PPI"], f"PPI/first_level_analysis/sPPI_results/PPI/{subject}_PPI.nii")
+    nib.save(z_maps["PPI"], f"PPI_analysis/first_level_analysis/sPPI_results/PPI/{subject}_PPI.nii")
 
     plot_z_maps(subject, anat_file, z_maps)
 
