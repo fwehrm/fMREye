@@ -27,7 +27,7 @@ The analyses were mainly performed in Python using packages such as nilearn, num
 No participant data are included in this repository.
 
 ## Results
-This repository is not intended to present or discuss the results in detail, but I wanted to include a couple of figures to give a visual impression of the project.
+This repository is not intended to present or discuss the study's results, but I wanted to include a couple of figures to give a visual impression of the project.
 
 <p align="center">
   <img width="600" alt="github_panel" src="https://github.com/user-attachments/assets/d6ee931b-ad17-4cff-af9c-b7130966bdf9" />
