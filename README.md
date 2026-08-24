@@ -38,4 +38,4 @@ This repository is not intended to present or discuss the study's results, but I
 </p>
 
 ## Acknowledgments
-Special thanks to Luise for saving me from what was rapidly turning into psychological crisis - I'm forever in your debt. Also, a big thank you to everyone at the Wagner Lab for supporting me throughout my thesis. Finally, I'd like to thank the University of Vienna for funding the project!
+Special thanks to Luise for saving me from what was rapidly turning into a psychological crisis - I'm forever in your debt. Also, a big thank you to everyone at the Wagner Lab for supporting me throughout my thesis. Finally, I'd like to thank the University of Vienna for funding the project!
